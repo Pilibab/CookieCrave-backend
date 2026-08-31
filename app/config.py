@@ -4,8 +4,12 @@ from pydantic import Field, SecretStr
 from pathlib import Path
 
 # Traces from config.py -> app/ -> backend/ -> CookieKrave/
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+ROOT_DIR = Path(__file__).resolve().parent.parent
 ENV_PATH = ROOT_DIR / ".env"
+
+# Quick path validation check on boot
+if not ENV_PATH.exists():
+    raise FileNotFoundError(f".env file not found at expected path: {ENV_PATH}")
 
 class AppConfig(BaseSettings):
     # ? why tf fo i need default=none here???
