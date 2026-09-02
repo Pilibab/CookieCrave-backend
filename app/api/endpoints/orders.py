@@ -1,6 +1,6 @@
 # backend/app/api/endpoints/orders.py
-from fastapi import APIRouter, Depends, HTTPException, status
-from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from typing import List, Optional, Dict, Any
 from supabase import Client
 from uuid import UUID
 from pydantic import BaseModel
@@ -159,3 +159,17 @@ def delete_order(order_id: int, service: OrderService = Depends(get_order_servic
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Order {order_id} not found.")
     service.order_repo.delete(order_id)
     return {"message": f"Order {order_id} deleted."}
+
+
+@router.get(
+    "/admin/details", 
+    response_model=List[Dict[str, Any]]
+    # todo add dependency for this only admin shudl see this 
+    ) 
+def get_admin_orders_debug(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    order_service: OrderService = Depends(get_order_service),
+):
+    """Debug route to inspect raw PostgREST joined output for admin order views."""
+    return order_service.get_admin_dashboard_orders(page=page, page_size=page_size)

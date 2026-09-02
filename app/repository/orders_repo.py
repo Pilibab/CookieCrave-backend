@@ -28,3 +28,33 @@ class OrderRepository(BaseRepository[Order, OrderCreate, OrderUpdate]):
         )
         data = cast(List[Dict[str, Any]], response.data)
         return [self.model_class(**item) for item in data]
+
+    def get_orders_with_details(self, limit: int, offset: int) -> List[Dict[str, Any]]:
+        # PostgREST range is inclusive: offset to (offset + limit - 1)
+        response = (
+            self.table
+            .select("""
+                ord_id,
+                ord_time,
+                total_amount,
+                order_status,
+                customers!inner (
+                    cust_id,
+                    cust_firstname,
+                    cust_lastname,
+                    cust_email
+                ),
+                cart (
+                    quantity:cart_quan,
+                    products (
+                        prod_id,
+                        prod_name,
+                        prod_price_per_item:prod_price
+                    )
+                )
+            """)
+            .order("ord_time", desc=True)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
+        return cast(List[Dict[str, Any]], response.data)

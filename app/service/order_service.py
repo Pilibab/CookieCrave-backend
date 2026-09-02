@@ -9,9 +9,10 @@ from app.model.fullfillement import FulfillmentCreate
 from app.model.order import OrderCreate
 from app.model.gcash import GCashPaymentCreate
 from app.repository.gcash_repo import GCashRepository
+from app.schema.orders import RawOrder, OrderResponse, CartItemTarget
 
 from collections import Counter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter
 from datetime import datetime
 from typing import List
 
@@ -128,5 +129,56 @@ class OrderService:
                 "error": str(e)
             }
 
+    def get_admin_dashboard_orders(self, page: int = 1, page_size: int = 20):
+        offset = (page - 1) * page_size
+        # 1 Single repository call executes the optimized JOIN
+        raw_rows = self.order_repo.get_orders_with_details(limit=page_size, offset=offset)
+        
+        # Group flat SQL rows into nested Order objects
+        return self._format_orders_dto(raw_rows)
+        # return raw_rows
+
+    def _format_orders_dto(self, raw_rows: List[Dict[str, Any]]): 
+        """
+            format raw supabase response to what the frontend wants 
+        """
+        parsed_raw_orders: list[RawOrder] = TypeAdapter(list[RawOrder]).validate_python(raw_rows)
+
+        formatted_orders : List[OrderResponse] = []
+
+        for row in parsed_raw_orders:
+            # get customer data 
+            customer_data = row.get("customers") or {}
+
+            formatted_items: List[CartItemTarget] = []
+            for cart_item in row.get("cart", []):
+                product_data = cart_item.get("products") or {}
+                quantity = cart_item.get("quantity", 0)
+                unit_price = float(product_data.get("prod_price_per_item", 0.0))
+
+                # has the schema of CartItemTarget
+                formatted_items.append({
+                    "prod_id": product_data.get("prod_id"),
+                    "prod_name": product_data.get("prod_name"),
+                    "quantity": quantity,
+                    "prod_price_per_item": unit_price,
+                    "subtotal": quantity * unit_price,
+                })
+
+            # has the schema of OrderResponse
+            formatted_orders.append({
+                "ord_id": row.get("ord_id"),
+                "ord_time": row.get("ord_time"),
+                "total_amount": row.get("total_amount"),
+                "order_status": row.get("order_status"),
+                "customer": {
+                    "cust_id": customer_data.get("cust_id"),
+                    "customer_name": f"{customer_data.get('cust_firstname', '')} {customer_data.get('cust_lastname', '')}".strip(),
+                    "email": customer_data.get("cust_email"),
+                },
+                "cart_items": formatted_items,
+            })
+
+        return formatted_orders
 
 
