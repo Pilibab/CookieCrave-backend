@@ -1,155 +1,117 @@
-from fastapi import APIRouter, Depends, HTTPException
-from typing import Any
-from nameparser import HumanName
+import jwt
+from jwt import PyJWKClient
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from typing import Optional, Any
 
-from app.repository.customer_repo import CustomerRepository
-from app.model.customer import CustomerCreate
-from app.api.deps import get_current_user
-from app.db.supabase_client import supabase_admin 
-# Define the router instead of importing app
-router = APIRouter(
-    prefix="/auth",
-    tags=["auth"],
-    # dependencies=[Depends(get_current_user)]
+from app.config import configs
+from app.api.deps import get_staff_repository
+from app.repository.staff_repo import StaffRepository
+from app.repository.orders_repo import OrderRepository
+from app.api.deps import get_order_repository
+from app.model.order import Order
+security = HTTPBearer(auto_error=False) # 🚨 Setting auto_error=False prevents hard crashes when header is missing
+
+jwks_client = PyJWKClient(
+    f"{configs.SUPABASE_URL.get_secret_value()}/auth/v1/.well-known/jwks.json"
 )
 
-# ! pray that this work
-@router.get("/me", summary="Validate token and return current user profile")
-def sync_user_profile(current_user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-    """
-    Validates token claims, synchronizes customer information if unregistered,
-    and returns a standardized profile matching frontend interface contract expectations.
-    """
-    user_id = current_user.get("sub") 
-    email = current_user.get("email")
+def get_current_user(
+    request: Request, # 1. Inject raw request context to search cookies
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> dict[str, Any] :
+    """Decodes JWT token from either the Authorization Header OR fallback Cookies."""
+    token = None
 
-    # 1. Fixed & Cleaned Validation Check Guards
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid token claims: missing 'sub' (user identifier).")
-    if not email:
-        raise HTTPException(status_code=401, detail="Invalid token claims: missing account 'email'.")
-    
-    # 2. Extract metadata parameters uniformly
-    user_metadata = current_user.get("user_metadata", {})
-    provider = current_user.get("app_metadata", {}).get("provider", "google")
-    
-    # Clean string processing for full names & fallbacks
-    display_name = user_metadata.get("full_name") or user_metadata.get("name") or email.split("@")[0]
-    image_url = user_metadata.get("avatar_url") or user_metadata.get("picture") or ""
-
-    full_name = HumanName(display_name)
-    first_name = full_name.first.title()
-    middle_name = full_name.middle.title()
-    last_name = full_name.last.title()
-
-    cust_repo = CustomerRepository(supabase_admin)
-    
-    try: 
-        # Check database if user belongs to staff list
-        staff_res = supabase_admin.table("staff").select("staff_id").eq("staff_id", user_id).execute()
-
-        # CASE A: User is an Administrator/Staff member
-        if len(staff_res.data) > 0:
-            return {
-                "user": {
-                    "id": user_id,
-                    "email": email,
-                    "name": display_name,
-                    "image": image_url,
-                    "role": "admin"
-                }
-            }
-
-        # CASE B: User is a Customer. Handle lazy registration verification check
-        if not cust_repo.is_user_registered(user_id):
-            new_customer = CustomerCreate(
-                cust_id=user_id,
-                cust_firstname=first_name,
-                cust_lastname=last_name,
-                cust_middlename=middle_name if middle_name else "",
-                cust_email=email,
-                cust_cont_no=current_user.get("phone") or "Not Provided",
-                cust_social_provider=provider,
-            )
-            cust_repo.create(new_customer)
-            
-        return {
-            "user": {
-                "id": user_id,
-                "email": email,
-                "name": display_name,
-                "image": image_url,
-                "role": "customer"
-            }
-        }
-
-    except Exception as e:
-        print(f"[CRITICAL AUTH FAILURE] Database error during identity sync: {str(e)}")
-        raise HTTPException(
-            status_code=500, 
-            detail="Identity synchronization engine failure. Please try again later."
-        )
+    # Step A: Check for explicit Authorization Bearer token header (Callback route context)
+    if credentials:
+        token = credentials.credentials
 
         
-# @router.get("/me", summary="Validate token and return current user profile")
-# def sync_user_profile(current_user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-#     """
-#     determins if the user is an admin/staff member.
-#     """
-#     # initialize repo
-#     # print(current_user)
-#     cust_repo = CustomerRepository(supabase_admin)
+    # Step B: If missing, fallback to extracted browser tracking cookies (Dashboard components view context)
+    if not token:
+        token = request.cookies.get("sb-access-token")
 
-#     user_id = current_user.get("sub") 
-#     email = current_user.get("email")
-#     cust_id=current_user.get("sub")
+    # Step C: If both routes turn up completely blank, fail loudly
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, 
+            detail="Not authenticated: Missing both authorization token bearer header and matching cookie session state."
+        )
 
-#     if not user_id:
-#         raise HTTPException(status_code=401, detail="Invalid token claims: missing 'sub'.")
+    try:
+        # Step D: Process and execute the validation checks as normal
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
+        payload = jwt.decode(
+            token,
+            signing_key.key,  
+            algorithms=["HS256", "ES256"],
+            options={"verify_aud": False}
+        )
+        return payload
+        
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired.")
+    except jwt.InvalidTokenError as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {e}")
+
+# Base user auth dependency you already have
+# (Decodes token and returns payload containing 'email')
+# def get_current_user(...) -> dict[str, Any]: ...
+
+def require_admin(
+    current_user: dict[str, Any] = Depends(get_current_user),
+    staff_repo: StaffRepository = Depends(get_staff_repository)
+) -> dict[str, Any]:
+    """
+    Verifies that the authenticated user's email exists in the 
+    public.staff table and possesses the 'admin' role designation.
+    """
+    # 1. Grab email from the validated Supabase JWT Payload
+    user_email = current_user.get("email")
+    if not user_email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid session: Token payload does not contain a verified email address."
+        )
+
+    # 2. Query your PostgreSQL staff table via StaffRepository
+    staff_member = staff_repo.get_by_email(user_email)
     
-#     if not cust_id:
-#         raise HTTPException(status_code=401, detail="Missing email.")
-    
-#     if not email:
-#         raise HTTPException(status_code=401, detail="Missing jwt identifier.")
-    
-#     provider = current_user.get("app_metadata", {}).get("provider")
-#     full_name = HumanName(current_user.get("user_metadata", {}).get("full_name"))
-#     first_name = full_name.first.title()
-#     middle_name = full_name.middle.title()
-#     last_name = full_name.last.title()
+    # 3. Reject if they aren't registered in the staff pool at all
+    if not staff_member:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access Denied: This account is not registered as a member of staff."
+        )
 
-#     # Initialize fallback flags safely at the top level scope
-#     is_admin = False
-    
-#     try: 
-#         #! use repo for this 
-#         staff_res = supabase_admin.table("staff").select("staff_id").eq("staff_id", user_id).execute()
+    # 4. Check if their assigned role matches 'admin'
+    # Note: Depending on whether your base repo parses into Pydantic or a raw dict, 
+    # use staff_member.role or staff_member.get('role'). If it's your model class: staff_member.role
+    if getattr(staff_member, "role", None) != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access Denied: Administrative privileges required."
+        )
 
-#         # checks if the token bearer has admin role
-#         if len(staff_res.data) > 0:
-#             return {"is_admin": True, "role": "admin", "email": email}
+    # Return the current user payload (or you could return the staff_member object)
+    return current_user
 
-#         if not cust_repo.is_user_registered(user_id):
-#             new_customer = CustomerCreate(
-#                 cust_id=cust_id,
-#                 cust_firstname=first_name,
-#                 cust_lastname=last_name,
-#                 cust_middlename=middle_name if middle_name else "",
-#                 cust_email=email,
-#                 cust_cont_no=current_user.get("phone") or "Not Provided",
-#                 cust_social_provider=provider,
-#             )
-#             cust_repo.create(new_customer)
-#     except Exception as e:
-#         print(f"[CRITICAL AUTH FAILURE] Database error during identity sync: {str(e)}")
-#         # FAIL LOUDLY: Stop the login flow if the database stutters!
-#         raise HTTPException(
-#             status_code=500, 
-#             detail="Identity synchronization engine failure. Please try again later."
-#         )
-#     return {
-#         **current_user,
-#         "is_admin": is_admin,
-#         "role": "admin" if is_admin else "customer"
-#     }
+# # Now your route stays super minimal:
+# @router.get("/orders/{order_id}")
+# def get_order_details(order: Order = Depends(verify_order_ownership)):
+#     return order
+def verify_ownership(
+    order_id: int,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    order_repo: OrderRepository = Depends(get_order_repository)
+) -> Order:
+    order = order_repo.get_by_id(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    # Compare user's JWT 'sub' claim directly to the order's cust_id
+    if str(order.cust_id) != str(current_user.get("sub")):
+        raise HTTPException(status_code=403, detail="Forbidden: Not your order")
+
+    return order
