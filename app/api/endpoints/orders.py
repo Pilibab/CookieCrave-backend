@@ -1,46 +1,15 @@
 # backend/app/api/endpoints/orders.py
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from typing import List, Optional, Dict, Any
-from supabase import Client
+from typing import List, Dict, Any
 from uuid import UUID
-from pydantic import BaseModel
-from decimal import Decimal
+
 
 from app.model.order import Order, OrderUpdate
 from app.repository.orders_repo import OrderRepository
-from app.repository.product_repo import ProductRepository
-from app.repository.cart_repo import CartRepository
-from app.repository.fullfillment_repo import FulfillmentRepository
-from app.repository.gcash_repo import GCashRepository
+from app.api.deps import get_order_service, get_order_repository
 from app.service.order_service import OrderService, FinalBillResponse
-from app.db.supabase_client import supabase
-
-class CreateOrderRequest(BaseModel):
-    cust_id: UUID
-    total_amount: Decimal
-    ord_pay_meth: str           # "GCash" | "Cash"
-    ord_f_type: str             # "Delivery" | "Pick_Up"
-    prod_ids: List[int]
-    reference_no: Optional[str] = None   # required only if GCash
-
-
-def get_supabase():
-    """Returns the globally initialized supabase client."""
-    return supabase
-
-def get_order_service(supabase: Client = Depends(get_supabase)) -> OrderService:
-    return OrderService(
-        order_repo=OrderRepository(supabase),
-        prod_repo=ProductRepository(supabase),
-        cart_repo=CartRepository(supabase),
-        fulfillment_repo=FulfillmentRepository(supabase),
-        gcash_repo=GCashRepository(supabase),
-    )
-
-
-def get_order_repository(supabase: Client = Depends(get_supabase)) -> OrderRepository:
-    """Provides an instance of the OrderRepository with the database connection injected."""
-    return OrderRepository(supabase)
+from app.api.auth import require_admin, verify_ownership
+from app.schema.orders import CreateOrderRequest
 
 # Define the router
 router = APIRouter(
@@ -96,7 +65,8 @@ def get_order_by_id(
 @router.get(
     "/customer/{customer_id}", 
     response_model=List[Order], 
-    summary="Get orders by customer"
+    summary="Get orders by customer",
+    dependencies=Depends(verify_ownership)
 )
 def get_orders_by_customer(
     customer_id: UUID, 
@@ -120,12 +90,13 @@ def get_orders_by_customer(
 @router.put(
     "/{order_id}", 
     response_model=Order, 
-    summary="Update an existing order"
+    summary="Update an existing order",
+    dependencies=Depends(verify_ownership)
 )
 def update_order(
     order_id: int, 
     order_data: OrderUpdate, 
-    repo: OrderRepository = Depends(get_order_repository)
+    repo: OrderRepository = Depends(get_order_repository),
 ):
     """
     Updates an entire order profile.
@@ -146,14 +117,23 @@ def update_order(
         
     return updated_records[0]
 
-@router.get("/{order_id}/bill", summary="Get final bill for an order", response_model=FinalBillResponse)
+@router.get(
+    "/{order_id}/bill", 
+    summary="Get final bill for an order", 
+    response_model=FinalBillResponse,
+    dependencies=Depends(verify_ownership)
+)
 def get_final_bill(order_id: int, service: OrderService = Depends(get_order_service)) -> FinalBillResponse:
     try:
         return service.get_final_bill(order_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     
-@router.delete("/{order_id}", summary="Delete an order")
+@router.delete(
+        "/{order_id}", 
+        summary="Delete an order",
+        dependencies=Depends(verify_ownership)
+        )
 def delete_order(order_id: int, service: OrderService = Depends(get_order_service)):
     if not service.order_repo.get_by_id(order_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Order {order_id} not found.")
@@ -163,8 +143,8 @@ def delete_order(order_id: int, service: OrderService = Depends(get_order_servic
 
 @router.get(
     "/admin/details", 
-    response_model=List[Dict[str, Any]]
-    # todo add dependency for this only admin shudl see this 
+    response_model=List[Dict[str, Any]],
+    dependencies=[Depends(require_admin)]
     ) 
 def get_admin_orders_debug(
     page: int = Query(1, ge=1),

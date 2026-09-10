@@ -1,6 +1,10 @@
-from typing import List
+from typing import List, Optional
 from typing_extensions import TypedDict
 from pydantic import EmailStr
+from pydantic import BaseModel
+from decimal import Decimal
+from uuid import UUID
+
 
 # ==========================================
 # RAW DB SHAPES (TypedDict for dict access .get() or [])
@@ -53,3 +57,12 @@ class OrderResponse(TypedDict):
     order_status: str
     customer: CustomerTarget
     cart_items: List[CartItemTarget]
+
+class CreateOrderRequest(BaseModel):
+    cust_id: UUID
+    total_amount: Decimal
+    ord_pay_meth: str           # "GCash" | "Cash"
+    ord_f_type: str             # "Delivery" | "Pick_Up"
+    prod_ids: List[int]
+    reference_no: Optional[str] = None   # required only if GCash
+    
