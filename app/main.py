@@ -11,7 +11,7 @@ from app.api.endpoints.orders import router as orders_router
 from app.api.endpoints.products import router as product_router
 from app.api.endpoints.riders import router as riders_router
 from app.api.endpoints.report import router as report_router
-from app.api.auth import router as auth_router
+from app.api.endpoints.auth import router as auth_router
 
 app = FastAPI(
     title="CookieKrave API",
