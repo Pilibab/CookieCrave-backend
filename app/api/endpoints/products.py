@@ -11,7 +11,8 @@ from app.repository.bom_repo import BOMRepository
 from app.repository.inventory_repo import InventoryRepository
 from app.repository.cart_repo import CartRepository
 from app.service.supply_chain_service import SupplyChainService # Adjust import path if needed
-
+from app.api.auth import require_admin
+# extract stuffs 
 def get_supabase():
     """Returns the globally initialized supabase client."""
     return supabase
@@ -24,6 +25,11 @@ def get_inventory_repository(supabase: Client = Depends(get_supabase)) -> Invent
 
 def get_cart_repository(supabase: Client = Depends(get_supabase)) -> CartRepository:
     return CartRepository(supabase)
+
+
+# ! ================================================================
+# ! main thingy
+# ! ================================================================
 
 def get_supply_chain_service(
     bom_repo: BOMRepository = Depends(get_bom_repository),
@@ -44,12 +50,15 @@ router = APIRouter(
     tags=["products"]
 )
 
-
+# ! =============================================================
+# ! http methods 
+# ! =============================================================
 @router.post(
     "", 
     response_model=Product, 
     status_code=status.HTTP_201_CREATED,
-    summary="Create a new product"
+    summary="Create a new product",
+    dependencies=[Depends(require_admin)]
 )
 def create_product(
     product_in: ProductCreate, 
@@ -62,6 +71,9 @@ def create_product(
     return repo.create(product_in)
 
 
+# =============================================================
+# public endpoints no security should be required 
+# =============================================================
 @router.get(
     "", 
     response_model=List[Product], 
@@ -110,6 +122,8 @@ def get_products(
     return products
 
 
+
+
 @router.get(
     "/{product_id}", 
     response_model=Product, 
@@ -131,10 +145,12 @@ def get_product_by_id(
     return product
 
 
+
 @router.put(
     "/{product_id}", 
     response_model=Product, 
-    summary="Update an existing product"
+    summary="Update an existing product",
+    dependencies=[Depends(require_admin)]
 )
 def update_product(
     product_id: int, 
@@ -161,9 +177,11 @@ def update_product(
     return updated_records[0]
 
 
+
 @router.delete(
     "/{product_id}", 
-    summary="Delete a product"
+    summary="Delete a product",
+    dependencies=[Depends(require_admin)]
 )
 def delete_product(
     product_id: int, 
